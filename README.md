@@ -207,4 +207,4 @@ For a real production system, the same data model maps cleanly onto a property g
 
 ## License
 
-Toy / educational use. No affiliation with McKesson Corporation.
+Toy / educational use. 
