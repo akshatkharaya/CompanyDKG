@@ -160,7 +160,7 @@ class DecisionEngine:
 
         active = self._active_exceptions(decision_id)
         triggered_constraints: list[str] = []
-        confidence = 0.85
+        confidence = 0.85 # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
         escalate = None
 
         if "exc_dsi_directive" in self.world.get("active_exceptions", set()):
@@ -220,7 +220,7 @@ class DecisionEngine:
             f"Customer tier={cust['tier']} -> default limit ${tier_default:,}",
             f"Credit score = {score}, avg days-late = {days_late_avg}",
         ]
-        confidence = 0.8
+        confidence = 0.8 # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
         escalate = None
         triggered = []
 
@@ -289,7 +289,7 @@ class DecisionEngine:
             decision_id=decision_id,
             decision_name=get_node(self.g, decision_id).name,
             recommended_action="; ".join(actions),
-            confidence=0.9,
+            confidence=0.9, # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
             rationale=rationale,
             consulted_inputs=ctx["inputs"],
             active_exceptions=self._active_exceptions(decision_id),
@@ -312,7 +312,7 @@ class DecisionEngine:
         ]
 
         triggered = []
-        confidence = 0.9
+        confidence = 0.9 # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
 
         if cash < min_buffer:
             shortfall = min_buffer - cash + weekly_outflow
@@ -357,7 +357,7 @@ class DecisionEngine:
 
         triggered = []
         escalate = None
-        confidence = 0.85
+        confidence = 0.85 # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
 
         if irr < hurdle:
             decision = "Reject — IRR below hurdle rate"
@@ -400,7 +400,7 @@ class DecisionEngine:
                 decision_id=decision_id,
                 decision_name=get_node(self.g, decision_id).name,
                 recommended_action="No suspicious orders today; submit nil report.",
-                confidence=0.95,
+                confidence=0.95, # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
                 rationale=rationale,
                 consulted_inputs=ctx["inputs"],
                 expected_kpi_impact={"DEA reporting compliance": "maintain"},
@@ -421,7 +421,7 @@ class DecisionEngine:
             decision_id=decision_id,
             decision_name=get_node(self.g, decision_id).name,
             recommended_action="; ".join(actions) + "; file SOR with DEA within 24h",
-            confidence=0.92,
+            confidence=0.92, # This is a made up number for demonstration — in a real system, you'd have a more rigorous way to estimate confidence based on measured performance of this decision
             rationale=rationale,
             consulted_inputs=ctx["inputs"],
             triggered_constraints=["DEA controlled substance quotas"],
