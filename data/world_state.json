@@ -1,0 +1,101 @@
+{
+  "active_exceptions": ["exc_dsi_directive"],
+
+  "skus": {
+    "SKU_001_amox_500": {
+      "weekly_forecast": 12000,
+      "on_hand": 3000,
+      "in_transit": 1500,
+      "safety_min": 2500
+    },
+    "SKU_002_lipitor_20": {
+      "weekly_forecast": 8000,
+      "on_hand": 800,
+      "in_transit": 2000,
+      "safety_min": 1500
+    },
+    "SKU_003_oxy_10": {
+      "weekly_forecast": 1500,
+      "on_hand": 600,
+      "in_transit": 200,
+      "safety_min": 800
+    }
+  },
+  "dc_capacity_available": 50000,
+
+  "customers": {
+    "cust_pharmacy_alpha": {
+      "tier": "tier_2",
+      "credit_score": 720,
+      "requested_limit": 250000,
+      "days_late_avg": 3
+    },
+    "cust_hospital_beta": {
+      "tier": "tier_1",
+      "credit_score": 780,
+      "requested_limit": 1500000,
+      "days_late_avg": 1
+    },
+    "cust_indie_gamma": {
+      "tier": "tier_3",
+      "credit_score": 580,
+      "requested_limit": 75000,
+      "days_late_avg": 18
+    }
+  },
+  "credit_policy_defaults": {
+    "tier_1": 1000000,
+    "tier_2": 200000,
+    "tier_3": 50000
+  },
+
+  "ar_aging": {
+    "cust_pharmacy_alpha": {"days_overdue": 12, "balance": 45000},
+    "cust_hospital_beta": {"days_overdue": 0, "balance": 0},
+    "cust_indie_gamma": {"days_overdue": 65, "balance": 28000},
+    "cust_clinic_delta": {"days_overdue": 95, "balance": 110000},
+    "cust_pharmacy_eps": {"days_overdue": 38, "balance": 15000}
+  },
+
+  "cash_on_hand": 42000000,
+  "projected_weekly_outflow": 14000000,
+  "min_cash_buffer": 30000000,
+  "credit_facility_available": 200000000,
+  "cash_coverage_weeks": 3.0,
+
+  "capex_proposals": {
+    "proj_dc_expansion": {
+      "amount": 8500000,
+      "projected_irr": 0.18,
+      "description": "Expand Memphis DC by 40,000 sqft"
+    },
+    "proj_robotics_pilot": {
+      "amount": 750000,
+      "projected_irr": 0.25,
+      "description": "Robotic picking pilot at Dallas DC"
+    },
+    "proj_legacy_replatform": {
+      "amount": 12000000,
+      "projected_irr": 0.09,
+      "description": "Replace legacy WMS — speculative ROI"
+    }
+  },
+  "capex_hurdle_rate": 0.12,
+
+  "dea_flagged_orders": [
+    {
+      "order_id": "ORD_98231",
+      "drug": "Oxycodone 10mg",
+      "quantity": 8000,
+      "customer": "cust_pharmacy_eps",
+      "z_score": 4.2
+    },
+    {
+      "order_id": "ORD_98244",
+      "drug": "Hydrocodone 5/325",
+      "quantity": 5500,
+      "customer": "cust_indie_gamma",
+      "z_score": 3.6
+    }
+  ]
+}

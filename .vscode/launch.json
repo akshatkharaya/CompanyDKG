@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Demo: Visualize",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "demos.demo_visualize",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"}
+    },
+    {
+      "name": "Demo: Query",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "demos.demo_query",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"}
+    },
+    {
+      "name": "Demo: Decide",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "demos.demo_decide",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"}
+    }
+  ]
+}
