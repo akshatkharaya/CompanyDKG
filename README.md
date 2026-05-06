@@ -195,6 +195,12 @@ Open `src/dkg/queries.py` and write a function. The graph is a NetworkX `MultiDi
 
 Each handler in `decision_engine.py` is independent. You can replace any of them with an ML model (e.g. an LLM call, a forecast model, or an optimizer) — the graph still provides the structured context, so the model gets a curated input bundle.
 
+### Replacing dummy confidence levels 
+
+What "honest confidence" would look like
+(A) Track historical accuracy. Log every recommendation, log the eventual outcome, compute calibrated confidence per decision type. After enough data, confidence = empirical_accuracy_in_similar_situations.
+(B) Decompose into known sub-uncertainties. For the PO decision, real uncertainty comes from forecast error (you know your MAPE), input freshness (stale data → lower confidence), and exception count (more overrides → less confidence). Combine those explicitly.
+
 ---
 
 ## Why a graph and not a relational DB?
