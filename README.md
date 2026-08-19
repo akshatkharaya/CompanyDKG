@@ -13,21 +13,23 @@ A toy implementation of a decision-centric knowledge graph for the McKesson US P
 ```
 mckesson_dkg/
 ├── data/
-│   ├── us_pharma_dkg.json     # Graph data: nodes + edges
-│   └── world_state.json       # Live state the engine reasons over
+│   ├── us_pharma_dkg.json        # Graph data: nodes + edges
+│   └── world_state.json          # Live state the engine reasons over
 ├── src/dkg/
-│   ├── schema.py              # Pydantic models for every node + edge type
-│   ├── graph_builder.py       # JSON -> NetworkX MultiDiGraph
-│   ├── visualize.py           # Interactive (pyvis) + static (matplotlib)
-│   ├── queries.py             # Useful traversals / lookups
-│   └── decision_engine.py     # Rule-based autonomous decision maker
+│   ├── schema.py                 # Pydantic models for every node + edge type
+│   ├── graph_builder.py          # JSON -> NetworkX MultiDiGraph
+│   ├── visualize.py              # Interactive (pyvis) + static (matplotlib)
+│   ├── queries.py                # Useful traversals / lookups
+│   ├── decision_engine.py        # Rule-based autonomous decision maker (all 12 decisions)
+│   ├── confidence.py             # Calibrated confidence scoring (replaces magic literals)
+│   └── exception_evaluator.py   # Auto-detects active exceptions from world state
 ├── demos/
-│   ├── demo_visualize.py      # Demo 1: build & render the graph
-│   ├── demo_query.py          # Demo 2: run example queries
-│   └── demo_decide.py         # Demo 3: make autonomous decisions
+│   ├── demo_visualize.py         # Demo 1: build & render the graph
+│   ├── demo_query.py             # Demo 2: run example queries
+│   └── demo_decide.py            # Demo 3: make autonomous decisions across all 12 decisions
 ├── tests/
-│   └── test_dkg.py            # Smoke tests
-├── outputs/                   # Generated HTML and PNG live here
+│   └── test_dkg.py               # Smoke tests (18 tests)
+├── outputs/                      # Generated HTML and PNG live here
 ├── requirements.txt
 ├── pyproject.toml
 └── README.md
@@ -143,38 +145,41 @@ Runs a battery of queries that show what the graph is good for:
 
 This is the punchline. The decision engine:
 
-1. Looks up the decision's structural context from the graph (inputs, constraints, exceptions).
-2. Reads the current world state from `data/world_state.json`.
-3. Applies decision-specific rules to produce a recommendation with rationale.
+1. Calls `evaluate_exceptions()` to automatically derive which exceptions are active from the current world state (e.g. stockout risk fires when days-of-supply drops below 5 — no manual toggling needed).
+2. Looks up each decision's structural context from the graph (inputs, constraints, exceptions).
+3. Reads the current world state from `data/world_state.json`.
+4. Applies decision-specific rules to produce a recommendation with rationale.
 
-It runs through several decisions back-to-back so you can see how a single change in the world state (e.g. flipping the `exc_dsi_directive` exception on/off) ripples through behavior.
+All 12 decisions in the graph now have handlers. The demo runs through every one so you can see how a single exception ripples across multiple teams.
 
 Each recommendation prints:
 
 ```
-DECISION: Place weekly POs with manufacturers  (dec_place_po)
+DECISION: Weekly SKU-level demand forecast  (dec_demand_forecast)
 ========================================================================
-Recommended action : Place PO for SKU=SKU_002_lipitor_20 qty=4720
-Confidence         : 75%
+Recommended action : Revise forecast: SKU_003_oxy_10: 1,500 -> 1,462 (MAPE=18.3%)
+Confidence         : 74%
 Rationale:
-  - Base target = forecast(8000) - on_hand(800) - in_transit(2000) + safety_min(1500) = 6700
-  - DSI reduction directive active: cut target 6700 -> 5360
-  - DC capacity constraint hit: target 5360 > available 4720, capped
+  - SKU_001_amox_500: forecast=12,000, avg_actual=11,925, MAPE=8.5%
+  - SKU_002_lipitor_20: forecast=8,000, avg_actual=7,950, MAPE=11.9%
+  - SKU_003_oxy_10: forecast=1,500, avg_actual=1,425, MAPE=18.3%
+  - High MAPE on SKU_003_oxy_10 — blending forecast with 4-week average
 Inputs consulted:
-  - SKU demand forecast
-  - Current on-hand inventory
-  - Open POs in transit
-  - Manufacturer list & contract prices
-Constraints triggered:
-  - DC storage capacity
+  - Historical sales transactions
+  - Daily order volume
 Active exceptions:
-  - CFO DSI reduction directive
+  - Imminent stockout alert
 Expected KPI impact:
-  - DSI: decrease
-  - Fill rate: maintain
+  - Forecast accuracy (MAPE): decrease
+
+Confidence breakdown:
+  - base: 0.880
+  - exception_penalty: -0.050
+  - freshness_penalty: -0.000
+  - forecast_mape_penalty: -0.140
 ```
 
-Every recommendation is auditable: you can see which graph nodes were consulted and which rules fired.
+Every recommendation is auditable: you can see which graph nodes were consulted, which rules fired, and exactly how the confidence score was computed.
 
 ---
 
@@ -191,15 +196,25 @@ Every recommendation is auditable: you can see which graph nodes were consulted 
 
 Open `src/dkg/queries.py` and write a function. The graph is a NetworkX `MultiDiGraph`, so anything in [the NetworkX docs](https://networkx.org/) works directly — shortest paths, centrality, community detection, etc.
 
-### Swap rule-based logic for ML
+### Swap rule-based logic for an LLM
 
-Each handler in `decision_engine.py` is independent. You can replace any of them with an ML model (e.g. an LLM call, a forecast model, or an optimizer) — the graph still provides the structured context, so the model gets a curated input bundle.
+Each handler in `decision_engine.py` is independent. You can replace any of them with an LLM call — the graph still provides the structured context via `_graph_context()`, so the model gets a curated input bundle rather than raw text. The `Recommendation` dataclass is the shared output contract between rule-based and LLM handlers.
 
-### Replacing dummy confidence levels 
+### Extend the confidence model
 
-What "honest confidence" would look like
-(A) Track historical accuracy. Log every recommendation, log the eventual outcome, compute calibrated confidence per decision type. After enough data, confidence = empirical_accuracy_in_similar_situations.
-(B) Decompose into known sub-uncertainties. For the PO decision, real uncertainty comes from forecast error (you know your MAPE), input freshness (stale data → lower confidence), and exception count (more overrides → less confidence). Combine those explicitly.
+`src/dkg/confidence.py` contains `compute_confidence()`, which decomposes confidence into three penalties applied to a handler-supplied base:
+
+| Penalty | Source | Max penalty |
+|---|---|---|
+| Exception count | `len(active_exceptions) × 0.05` | unbounded |
+| Data freshness | Hours since `world_state["last_updated"]` | −0.15 |
+| Forecast MAPE | `world_state["forecast_mape"]` average | −0.20 |
+
+To add a new signal (e.g. supplier reliability score, weather severity), extend `compute_confidence()` with a new penalty term and add the corresponding field to `world_state.json`.
+
+### Auto-detect new exceptions
+
+`src/dkg/exception_evaluator.py` maps each exception's `trigger_condition` to a world-state check. To make a new exception auto-detectable, add an `if` block in `evaluate_exceptions()` that reads the relevant world-state fields and adds the exception ID to `active`. Exceptions that require an external signal (FDA recall notice, weather warning) stay in the manual fallback path.
 
 ---
 
