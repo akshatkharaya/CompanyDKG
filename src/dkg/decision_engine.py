@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 
 import networkx as nx
 
+from .confidence import compute_confidence
 from .graph_builder import get_node
 from .queries import _owner_of
 
@@ -43,6 +44,7 @@ class Recommendation:
     active_exceptions: list[str] = field(default_factory=list)
     expected_kpi_impact: dict[str, str] = field(default_factory=dict)
     escalate_to: Optional[str] = None
+    confidence_model: Optional[dict[str, float]] = None
 
     def pretty(self) -> str:
         lines = [
@@ -70,6 +72,13 @@ class Recommendation:
             lines.append("\nExpected KPI impact:")
             for k, v in self.expected_kpi_impact.items():
                 lines.append(f"  - {k}: {v}")
+        if self.confidence_model:
+            lines.append("\nConfidence breakdown:")
+            for k, v in self.confidence_model.items():
+                if k == "final":
+                    continue
+                prefix = "  " if k == "base" else " "
+                lines.append(f"{prefix} - {k}: {v:+.3f}" if k != "base" else f"  - {k}: {v:.3f}")
         return "\n".join(lines)
 
 
@@ -92,6 +101,12 @@ class DecisionEngine:
             "dec_capex_approval": self._decide_capex,
             "dec_dea_reporting": self._decide_dea,
             "dec_route_plan": self._decide_route,
+            # Previously unimplemented — now complete
+            "dec_demand_forecast": self._decide_demand_forecast,
+            "dec_warehouse_schedule": self._decide_warehouse_schedule,
+            "dec_price_change": self._decide_price_change,
+            "dec_supplier_negotiation": self._decide_supplier_negotiation,
+            "dec_cash_forecast": self._decide_cash_forecast,
         }
 
     def supported_decisions(self) -> list[str]:
@@ -453,5 +468,364 @@ class DecisionEngine:
             active_exceptions=self._active_exceptions(decision_id),
             expected_kpi_impact={
                 "On-time delivery rate": "at risk" if weather_active else "maintain"
+            },
+        )
+
+    def _decide_demand_forecast(
+        self, decision_id: str, sku: str | None = None
+    ) -> Recommendation:
+        """Evaluate forecast accuracy per SKU and recommend adjustments.
+
+        Logic:
+          - Compute MAPE against last 4 weeks of historical actuals
+          - SKUs with MAPE > 15% get forecast revised toward 4-week average
+          - Confidence penalised by exception count, freshness, and avg MAPE
+        """
+        ctx = self._graph_context(decision_id)
+        skus_to_check = (
+            {sku: self.world["skus"][sku]} if sku else self.world["skus"]
+        )
+        mape_threshold = 0.15
+
+        rationale: list[str] = []
+        high_error_skus: list[tuple[str, float, int, float]] = []
+
+        for sku_id, sku_state in skus_to_check.items():
+            actuals = sku_state.get("historical_actuals", [])
+            forecast = sku_state["weekly_forecast"]
+            if actuals and forecast > 0:
+                mape = sum(abs(a - forecast) / forecast for a in actuals) / len(actuals)
+                avg_actual = sum(actuals) / len(actuals)
+                rationale.append(
+                    f"{sku_id}: forecast={forecast:,}, avg_actual={avg_actual:,.0f}, MAPE={mape:.1%}"
+                )
+                if mape > mape_threshold:
+                    high_error_skus.append((sku_id, mape, forecast, avg_actual))
+            else:
+                rationale.append(f"{sku_id}: no historical actuals — publishing forecast as-is")
+
+        active = self._active_exceptions(decision_id)
+        confidence, confidence_model = compute_confidence(0.88, active, self.world, decision_id)
+
+        if high_error_skus:
+            adjustments: list[str] = []
+            for sku_id, mape, old_fc, avg_actual in high_error_skus:
+                new_fc = int(0.5 * old_fc + 0.5 * avg_actual)
+                adjustments.append(f"{sku_id}: {old_fc:,} -> {new_fc:,} (MAPE={mape:.1%})")
+                rationale.append(f"High MAPE on {sku_id} — blending forecast with 4-week average")
+            action = "Revise forecast: " + "; ".join(adjustments)
+        else:
+            action = "Forecast within accuracy bounds; publish as-is"
+            rationale.append(f"All SKUs within MAPE threshold ({mape_threshold:.0%})")
+
+        return Recommendation(
+            decision_id=decision_id,
+            decision_name=get_node(self.g, decision_id).name,
+            recommended_action=action,
+            confidence=confidence,
+            confidence_model=confidence_model,
+            rationale=rationale,
+            consulted_inputs=ctx["inputs"],
+            active_exceptions=active,
+            expected_kpi_impact={
+                "Forecast accuracy (MAPE)": "decrease" if high_error_skus else "maintain"
+            },
+        )
+
+    def _decide_warehouse_schedule(self, decision_id: str) -> Recommendation:
+        """Recommend daily warehouse labor and throughput plan.
+
+        Logic:
+          - Compute daily order volume from SKU weekly forecasts
+          - If weather exception: activate contingency (critical orders only)
+          - If utilization > 85%: schedule overtime
+          - If utilization < 60%: reduce shifts, use for cross-training
+        """
+        ctx = self._graph_context(decision_id)
+        skus = self.world["skus"]
+        daily_volume = sum(s["weekly_forecast"] / 7 for s in skus.values())
+        dc_capacity = self.world["dc_capacity_available"]
+        labor_hours = self.world.get("dc_labor_hours_available", 2400)
+        weather_active = "exc_weather_disruption" in self.world.get("active_exceptions", set())
+
+        utilization = daily_volume / (dc_capacity / 7)
+
+        rationale = [
+            f"Projected daily order volume: {daily_volume:,.0f} units",
+            f"DC daily capacity share: {dc_capacity / 7:,.0f} units ({utilization:.0%} utilization)",
+            f"Labor hours budgeted: {labor_hours:,}h",
+        ]
+
+        triggered: list[str] = []
+        active = self._active_exceptions(decision_id)
+        confidence, confidence_model = compute_confidence(0.88, active, self.world, decision_id)
+
+        if weather_active:
+            action = (
+                "Activate contingency plan: halt non-urgent picks, "
+                "prioritize controlled substances & hospital orders"
+            )
+            rationale.append("Weather disruption active — prioritize critical-care fulfillment")
+            confidence = max(0.0, confidence - 0.15)
+        elif utilization > 0.85:
+            extra_hours = int((utilization - 0.85) * labor_hours * 0.5)
+            action = f"Schedule standard shifts + {extra_hours}h overtime; prioritize picking queue"
+            rationale.append(f"Utilization {utilization:.0%} — overtime authorization required")
+            triggered.append("DC storage capacity")
+            confidence = max(0.0, confidence - 0.05)
+        elif utilization > 0.60:
+            action = "Run standard shift schedule; no overtime required"
+            rationale.append(f"Utilization {utilization:.0%} — standard operations")
+        else:
+            action = "Run reduced-shift schedule; use slack time for cross-training"
+            rationale.append(f"Low utilization ({utilization:.0%}) — training opportunity")
+
+        return Recommendation(
+            decision_id=decision_id,
+            decision_name=get_node(self.g, decision_id).name,
+            recommended_action=action,
+            confidence=confidence,
+            confidence_model=confidence_model,
+            rationale=rationale,
+            consulted_inputs=ctx["inputs"],
+            triggered_constraints=triggered,
+            active_exceptions=active,
+            expected_kpi_impact={
+                "DC throughput efficiency": "at risk" if weather_active else "maintain"
+            },
+        )
+
+    def _decide_price_change(
+        self, decision_id: str, sku: str | None = None
+    ) -> Recommendation:
+        """Recommend monthly pricing changes per SKU.
+
+        Logic:
+          - If gross margin < floor: raise price to restore margin + 2% buffer
+          - If price > competitor by > 5%: lower toward competitive parity
+          - Otherwise: hold
+        """
+        ctx = self._graph_context(decision_id)
+        skus_to_check = (
+            {sku: self.world["skus"][sku]} if sku else self.world["skus"]
+        )
+        min_margin_pct = self.world.get("min_gross_margin_pct", 0.30)
+
+        rationale = [f"Minimum gross margin floor: {min_margin_pct:.0%}"]
+        recommended_changes: list[str] = []
+        triggered: list[str] = []
+        active = self._active_exceptions(decision_id)
+        confidence, confidence_model = compute_confidence(0.80, active, self.world, decision_id)
+
+        for sku_id, sku_state in skus_to_check.items():
+            price = sku_state.get("current_price", 0.0)
+            cost = sku_state.get("unit_cost", 0.0)
+            comp_price = sku_state.get("competitor_price", price)
+
+            if price <= 0 or cost <= 0:
+                rationale.append(f"{sku_id}: price/cost data unavailable — skipped")
+                continue
+
+            margin = (price - cost) / price
+            rationale.append(
+                f"{sku_id}: price=${price:.2f}, cost=${cost:.2f}, "
+                f"margin={margin:.1%}, competitor=${comp_price:.2f}"
+            )
+
+            if margin < min_margin_pct:
+                floor_price = cost / (1 - min_margin_pct)
+                new_price = round(floor_price * 1.02, 2)
+                recommended_changes.append(
+                    f"Raise {sku_id} ${price:.2f} -> ${new_price:.2f} (below margin floor)"
+                )
+                triggered.append("Cost-plus pricing floor")
+                confidence = max(0.0, confidence - 0.10)
+            elif price > comp_price * 1.05:
+                new_price = round(comp_price * 1.02, 2)
+                recommended_changes.append(
+                    f"Lower {sku_id} ${price:.2f} -> ${new_price:.2f} (>5% above competitor)"
+                )
+            else:
+                recommended_changes.append(
+                    f"Hold {sku_id} at ${price:.2f} (margin OK, within competitive range)"
+                )
+
+        action = (
+            "No pricing changes required this cycle"
+            if not recommended_changes
+            else "; ".join(recommended_changes)
+        )
+        any_raise = any("Raise" in r for r in recommended_changes)
+
+        return Recommendation(
+            decision_id=decision_id,
+            decision_name=get_node(self.g, decision_id).name,
+            recommended_action=action,
+            confidence=confidence,
+            confidence_model=confidence_model,
+            rationale=rationale,
+            consulted_inputs=ctx["inputs"],
+            triggered_constraints=list(dict.fromkeys(triggered)),  # deduplicate
+            active_exceptions=active,
+            expected_kpi_impact={"Gross margin": "improve" if any_raise else "maintain"},
+        )
+
+    def _decide_supplier_negotiation(
+        self, decision_id: str, supplier_id: str | None = None
+    ) -> Recommendation:
+        """Recommend supplier contract renewal and rebate actions.
+
+        Logic:
+          - Contracts expiring in < 30 days: urgent renewal flag
+          - Contracts expiring in 30-90 days: begin negotiations
+          - Annual spend >= rebate threshold: claim rebate
+          - Annual spend >= 85% of threshold: consider volume uplift to qualify
+        """
+        ctx = self._graph_context(decision_id)
+        contracts = self.world.get("supplier_contracts", {})
+        contracts_to_check = (
+            {supplier_id: contracts[supplier_id]} if supplier_id else contracts
+        )
+
+        rationale: list[str] = []
+        actions: list[str] = []
+        active = self._active_exceptions(decision_id)
+        confidence, confidence_model = compute_confidence(0.75, active, self.world, decision_id)
+
+        for sup_id, contract in contracts_to_check.items():
+            name = contract.get("name", sup_id)
+            days_to_expiry = contract.get("days_to_expiry", 999)
+            spend = contract.get("annual_spend", 0)
+            rebate_threshold = contract.get("rebate_threshold", 0)
+            rebate_pct = contract.get("rebate_pct", 0.0)
+
+            rationale.append(
+                f"{name}: expires in {days_to_expiry}d, spend=${spend:,.0f}, "
+                f"rebate threshold=${rebate_threshold:,.0f} @ {rebate_pct:.1%}"
+            )
+
+            if days_to_expiry <= 30:
+                actions.append(f"URGENT: Initiate renewal with {name} (expiring in {days_to_expiry}d)")
+                confidence = max(0.0, confidence - 0.10)
+            elif days_to_expiry <= 90:
+                actions.append(f"Begin renewal negotiation with {name} ({days_to_expiry}d to expiry)")
+
+            if spend >= rebate_threshold:
+                rebate_value = spend * rebate_pct
+                actions.append(
+                    f"Claim ${rebate_value:,.0f} rebate from {name} "
+                    f"(spend ${spend:,.0f} >= threshold ${rebate_threshold:,.0f})"
+                )
+                rationale.append(f"{name}: eligible for ${rebate_value:,.0f} annual rebate")
+            elif spend >= rebate_threshold * 0.85:
+                shortfall = rebate_threshold - spend
+                actions.append(
+                    f"Increase {name} volume by ${shortfall:,.0f} to unlock "
+                    f"{rebate_pct:.1%} rebate (${spend * rebate_pct:,.0f})"
+                )
+                rationale.append(f"{name}: ${shortfall:,.0f} below rebate threshold")
+
+        action = (
+            "No supplier contracts require immediate action; monitor quarterly"
+            if not actions
+            else "; ".join(actions)
+        )
+
+        return Recommendation(
+            decision_id=decision_id,
+            decision_name=get_node(self.g, decision_id).name,
+            recommended_action=action,
+            confidence=confidence,
+            confidence_model=confidence_model,
+            rationale=rationale,
+            consulted_inputs=ctx["inputs"],
+            active_exceptions=active,
+            expected_kpi_impact={"Gross margin": "improve" if actions else "maintain"},
+        )
+
+    def _decide_cash_forecast(self, decision_id: str) -> Recommendation:
+        """Project 30-day cash position from AR collections and PO outflows.
+
+        Logic:
+          - Estimate AR collections using payment patterns and collection probability
+          - Project outflows: 4 weeks of operational spend + pending POs
+          - If projected 30d cash < min buffer: pre-arrange credit drawdown
+          - If large customer default exception: reduce collection confidence, escalate
+        """
+        ctx = self._graph_context(decision_id)
+        aging = self.world.get("ar_aging", {})
+        patterns = self.world.get("customer_payment_patterns", {})
+
+        collections_7d = 0.0
+        collections_30d = 0.0
+        for cust_id, info in aging.items():
+            balance = info.get("balance", 0)
+            days_overdue = info.get("days_overdue", 0)
+            pattern = patterns.get(cust_id, {})
+            prob = pattern.get("collection_probability", 0.90)
+            avg_days = pattern.get("avg_days_to_pay", 30)
+            days_remaining = max(0, avg_days - days_overdue)
+            if days_remaining <= 7:
+                collections_7d += balance * prob
+            elif days_remaining <= 30:
+                collections_30d += balance * prob
+
+        weekly_outflow = self.world.get("projected_weekly_outflow", 0)
+        pending_po = self.world.get("pending_po_outflows", 0)
+        outflow_30d = weekly_outflow * 4 + pending_po
+
+        cash = self.world.get("cash_on_hand", 0)
+        projected_cash_30d = cash + collections_7d + collections_30d - outflow_30d
+        min_buffer = self.world.get("min_cash_buffer", 0)
+        net_30d = collections_7d + collections_30d - outflow_30d
+
+        rationale = [
+            f"AR collections expected (7d): ${collections_7d:,.0f}",
+            f"AR collections expected (30d): ${collections_30d:,.0f}",
+            f"Projected 30d outflows (ops + POs): ${outflow_30d:,.0f}",
+            f"Projected cash position (30d): ${projected_cash_30d:,.0f} "
+            f"(min buffer: ${min_buffer:,.0f})",
+        ]
+
+        active = self._active_exceptions(decision_id)
+        confidence, confidence_model = compute_confidence(0.82, active, self.world, decision_id)
+        triggered: list[str] = []
+        escalate = None
+
+        if "exc_large_customer_default" in self.world.get("active_exceptions", set()):
+            rationale.append("Large customer default active — AR collections may be overstated")
+            confidence = max(0.0, confidence - 0.15)
+            escalate = self._escalation_team(decision_id)
+
+        if projected_cash_30d < min_buffer:
+            shortfall = min_buffer - projected_cash_30d
+            action = (
+                f"ALERT: 30d projected cash ${projected_cash_30d:,.0f} below min buffer — "
+                f"pre-arrange ${shortfall:,.0f} credit drawdown"
+            )
+            triggered.append("Minimum cash buffer policy")
+            confidence = max(0.0, confidence - 0.10)
+        elif net_30d > 0:
+            action = f"30d outlook positive (net +${net_30d:,.0f}); continue standard PO schedule"
+        else:
+            action = (
+                f"30d outlook shows net outflow of ${abs(net_30d):,.0f}; "
+                f"monitor AR collections closely"
+            )
+
+        return Recommendation(
+            decision_id=decision_id,
+            decision_name=get_node(self.g, decision_id).name,
+            recommended_action=action,
+            confidence=confidence,
+            confidence_model=confidence_model,
+            rationale=rationale,
+            consulted_inputs=ctx["inputs"],
+            triggered_constraints=triggered,
+            active_exceptions=active,
+            escalate_to=escalate,
+            expected_kpi_impact={
+                "Cash coverage ratio": "maintain" if projected_cash_30d >= min_buffer else "at risk",
+                "Forecast accuracy (MAPE)": "maintain",
             },
         )

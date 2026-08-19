@@ -1,27 +1,48 @@
 {
   "active_exceptions": ["exc_dsi_directive"],
+  "last_updated": "2026-08-18T08:00:00",
+  "dsi_target_days": 14,
+
+  "forecast_mape": {
+    "SKU_001_amox_500": 0.08,
+    "SKU_002_lipitor_20": 0.12,
+    "SKU_003_oxy_10": 0.22
+  },
 
   "skus": {
     "SKU_001_amox_500": {
       "weekly_forecast": 12000,
       "on_hand": 3000,
       "in_transit": 1500,
-      "safety_min": 2500
+      "safety_min": 2500,
+      "historical_actuals": [11500, 12300, 11800, 12100],
+      "current_price": 4.50,
+      "unit_cost": 2.80,
+      "competitor_price": 4.20
     },
     "SKU_002_lipitor_20": {
       "weekly_forecast": 8000,
       "on_hand": 800,
       "in_transit": 2000,
-      "safety_min": 1500
+      "safety_min": 1500,
+      "historical_actuals": [7200, 8800, 7500, 8300],
+      "current_price": 12.00,
+      "unit_cost": 7.80,
+      "competitor_price": 11.50
     },
     "SKU_003_oxy_10": {
       "weekly_forecast": 1500,
       "on_hand": 600,
       "in_transit": 200,
-      "safety_min": 800
+      "safety_min": 800,
+      "historical_actuals": [1800, 1200, 1600, 1100],
+      "current_price": 22.00,
+      "unit_cost": 14.50,
+      "competitor_price": 21.00
     }
   },
   "dc_capacity_available": 50000,
+  "dc_labor_hours_available": 2400,
 
   "customers": {
     "cust_pharmacy_alpha": {
@@ -56,9 +77,17 @@
     "cust_clinic_delta": {"days_overdue": 95, "balance": 110000},
     "cust_pharmacy_eps": {"days_overdue": 38, "balance": 15000}
   },
+  "customer_payment_patterns": {
+    "cust_pharmacy_alpha": {"avg_days_to_pay": 28, "collection_probability": 0.97},
+    "cust_hospital_beta":  {"avg_days_to_pay": 21, "collection_probability": 0.99},
+    "cust_indie_gamma":    {"avg_days_to_pay": 45, "collection_probability": 0.85},
+    "cust_clinic_delta":   {"avg_days_to_pay": 90, "collection_probability": 0.70},
+    "cust_pharmacy_eps":   {"avg_days_to_pay": 35, "collection_probability": 0.90}
+  },
 
   "cash_on_hand": 42000000,
   "projected_weekly_outflow": 14000000,
+  "pending_po_outflows": 8500000,
   "min_cash_buffer": 30000000,
   "credit_facility_available": 200000000,
   "cash_coverage_weeks": 3.0,
@@ -81,6 +110,32 @@
     }
   },
   "capex_hurdle_rate": 0.12,
+
+  "supplier_contracts": {
+    "sup_pfizer": {
+      "name": "Pfizer",
+      "days_to_expiry": 45,
+      "annual_spend": 18000000,
+      "rebate_threshold": 15000000,
+      "rebate_pct": 0.03
+    },
+    "sup_teva": {
+      "name": "Teva",
+      "days_to_expiry": 180,
+      "annual_spend": 9000000,
+      "rebate_threshold": 8000000,
+      "rebate_pct": 0.025
+    },
+    "sup_mckesson_mfg": {
+      "name": "McKesson Manufacturing",
+      "days_to_expiry": 320,
+      "annual_spend": 5000000,
+      "rebate_threshold": 4000000,
+      "rebate_pct": 0.02
+    }
+  },
+
+  "min_gross_margin_pct": 0.30,
 
   "dea_flagged_orders": [
     {

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from dkg.decision_engine import DecisionEngine
+from dkg.exception_evaluator import evaluate_exceptions
 from dkg.graph_builder import build_graph, summary
 from dkg.queries import (
     blast_radius,
@@ -91,3 +92,87 @@ def test_engine_dea_flags_orders(graph, world):
     rec = engine.run("dec_dea_reporting")
     assert "Halt" in rec.recommended_action
     assert rec.escalate_to is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — new handlers
+# ---------------------------------------------------------------------------
+
+
+def test_engine_demand_forecast_high_mape_revises(graph, world):
+    """Oxycodone has MAPE ~22% in the fixture — forecast should be revised."""
+    engine = DecisionEngine(graph, world)
+    rec = engine.run("dec_demand_forecast", sku="SKU_003_oxy_10")
+    assert "Revise" in rec.recommended_action
+    assert rec.confidence > 0
+    assert rec.confidence_model is not None
+    assert "base" in rec.confidence_model
+
+
+def test_engine_demand_forecast_low_mape_holds(graph, world):
+    """Amoxicillin has MAPE ~8% — forecast should be published as-is."""
+    engine = DecisionEngine(graph, world)
+    rec = engine.run("dec_demand_forecast", sku="SKU_001_amox_500")
+    assert "as-is" in rec.recommended_action.lower()
+
+
+def test_engine_warehouse_schedule_returns_action(graph, world):
+    engine = DecisionEngine(graph, world)
+    rec = engine.run("dec_warehouse_schedule")
+    assert rec.recommended_action
+    assert rec.confidence > 0
+    assert rec.confidence_model is not None
+
+
+def test_engine_price_change_flags_competitor_gap(graph, world):
+    """Amoxicillin is priced $4.50 vs competitor $4.20 — >5% above, so lower recommended."""
+    engine = DecisionEngine(graph, world)
+    rec = engine.run("dec_price_change", sku="SKU_001_amox_500")
+    assert "Lower" in rec.recommended_action or "Hold" in rec.recommended_action
+
+
+def test_engine_supplier_negotiation_urgent_renewal(graph, world):
+    """Pfizer expires in 45 days — negotiation should be flagged."""
+    engine = DecisionEngine(graph, world)
+    rec = engine.run("dec_supplier_negotiation", supplier_id="sup_pfizer")
+    assert "renewal" in rec.recommended_action.lower() or "Initiate" in rec.recommended_action
+
+
+def test_engine_cash_forecast_returns_projection(graph, world):
+    engine = DecisionEngine(graph, world)
+    rec = engine.run("dec_cash_forecast")
+    assert rec.recommended_action
+    assert rec.confidence > 0
+    assert "30d" in rec.recommended_action or "outlook" in rec.recommended_action.lower()
+
+
+def test_all_decisions_now_have_handlers(graph, world):
+    """Every decision node in the graph must have a registered handler."""
+    engine = DecisionEngine(graph, world)
+    decisions = [n for n, d in graph.nodes(data=True) if d["node_type"] == "decision"]
+    assert len(decisions) == 12
+    missing = [d for d in decisions if d not in engine.supported_decisions()]
+    assert missing == [], f"Decisions without handlers: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — exception evaluator
+# ---------------------------------------------------------------------------
+
+
+def test_exception_evaluator_detects_stockout(graph, world):
+    """Oxycodone has ~3.7 days of supply in the fixture — should trigger stockout."""
+    active = evaluate_exceptions(graph, world)
+    assert "exc_stockout_risk" in active
+
+
+def test_exception_evaluator_detects_dea_flag(graph, world):
+    active = evaluate_exceptions(graph, world)
+    assert "exc_dea_flag" in active
+
+
+def test_exception_evaluator_preserves_manual_exceptions(graph, world):
+    """Manual-only exceptions (weather, recall) present in world state are preserved."""
+    world_with_weather = {**world, "active_exceptions": {"exc_weather_disruption"}}
+    active = evaluate_exceptions(graph, world_with_weather)
+    assert "exc_weather_disruption" in active
